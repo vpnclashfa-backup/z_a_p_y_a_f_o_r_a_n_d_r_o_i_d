@@ -35,8 +35,6 @@ VERSION_PATTERNS_FOR_CLEANING = [
     r'\s+\d+(?:\.\d+)*\b' 
 ]
 
-# This list is now primarily for *detecting* variants from link text/URL filename,
-# and for *aggressively cleaning* the app name for the tracking_id.
 COMMON_VARIANT_KEYWORDS_TO_DETECT_AND_CLEAN = [
     "Mod-Extra", "مود اکسترا", "موداکسترا",
     "Mod-Lite", "مود لایت", "مودلایت",
@@ -50,7 +48,7 @@ COMMON_VARIANT_KEYWORDS_TO_DETECT_AND_CLEAN = [
     "Original", "اورجینال", "اصلی", "معمولی",
     "Arm64-v8a", "Armeabi-v7a", "x86_64",
     "Arm64", "Armv7", "Arm", "x86", 
-    "Windows", "ویندوز", "PC", "کامپیوتر", # PC is important for app name itself
+    "Windows", "ویندوز", "PC", "کامپیوتر", 
     "macOS", "Mac", "OSX", 
     "Linux", "لینوکس", 
     "Ultra", "اولترا",
@@ -112,47 +110,62 @@ def compare_versions(current_v_str, last_v_str):
 
 def sanitize_text(text, for_filename=False):
     if not text: return ""
-    text = text.strip()
-    text = re.sub(r'\s*\((?:www\.)?farsroid\.com.*?\)\s*$', '', text, flags=re.IGNORECASE).strip() 
+    text_cleaned = text.strip()
+    text_cleaned = re.sub(r'\s*\((?:www\.)?farsroid\.com.*?\)\s*$', '', text_cleaned, flags=re.IGNORECASE).strip() 
     if for_filename:
-        text = text.lower()
-        text = text.replace('–', '-').replace('—', '-') 
-        text = re.sub(r'[<>:"/\\|?*()\[\]]', '_', text) 
-        text = re.sub(r'\s+', '_', text) 
-        text = text.replace('-_', '_').replace('_-', '_')
-        text = re.sub(r'_+', '_', text) 
-        text = text.strip('_') 
+        text_cleaned = text_cleaned.lower()
+        text_cleaned = text_cleaned.replace('–', '-').replace('—', '-') 
+        text_cleaned = re.sub(r'[<>:"/\\|?*()\[\]]', '_', text_cleaned) 
+        text_cleaned = re.sub(r'\s+', '_', text_cleaned) 
+        text_cleaned = text_cleaned.replace('-_', '_').replace('_-', '_')
+        text_cleaned = re.sub(r'_+', '_', text_cleaned) 
+        text_cleaned = text_cleaned.strip('_') 
     else: 
-        text = text.lower()
-        text = text.replace('–', '-').replace('—', '-')
-        text = re.sub(r'[\(\)\[\]]', '', text) 
-        text = re.sub(r'\s+', '_', text)
-        text = text.strip('_')
-    return text
+        text_cleaned = text_cleaned.lower()
+        text_cleaned = text_cleaned.replace('–', '-').replace('—', '-')
+        text_cleaned = re.sub(r'[\(\)\[\]]', '', text_cleaned) 
+        text_cleaned = re.sub(r'\s+', '_', text_cleaned)
+        text_cleaned = text_cleaned.strip('_')
+    return text_cleaned
 
-def aggressively_clean_name(name_to_clean, keywords_list, version_patterns_list):
-    """Aggressively cleans a name from all specified keywords and version patterns."""
+def aggressively_clean_name_for_tracking(name_to_clean):
+    """Aggressively cleans a name for tracking ID purposes."""
     cleaned_name = name_to_clean
     
-    for pattern in version_patterns_list:
+    for pattern in VERSION_PATTERNS_FOR_CLEANING:
         cleaned_name = re.sub(pattern, '', cleaned_name, flags=re.IGNORECASE).strip("-_ ")
         cleaned_name = re.sub(r'\s+', ' ', cleaned_name).strip("-_ ")
 
-    sorted_keywords = sorted(keywords_list, key=len, reverse=True)
+    # Use a broader list of keywords for aggressive cleaning for tracking ID
+    # This ensures the base name for tracking is very generic
+    all_keywords_for_aggressive_clean = COMMON_VARIANT_KEYWORDS_TO_DETECT_AND_CLEAN + \
+                                       ["PC", "کامپیوتر", "ویندوز", "Windows", "Lite", "لایت", "Pro", "پرو"] # Add specific ones if not covered
+    
+    sorted_keywords = sorted(list(set(all_keywords_for_aggressive_clean)), key=len, reverse=True)
+
     for kw in sorted_keywords:
         kw_regex = r'\b' + re.escape(kw) + r'\b'
-        while re.search(kw_regex, cleaned_name, flags=re.IGNORECASE):
+        # Iteratively remove to catch all occurrences
+        prev_name = None
+        while prev_name != cleaned_name: # Loop until no more changes
+            prev_name = cleaned_name
             cleaned_name = re.sub(kw_regex, '', cleaned_name, flags=re.IGNORECASE).strip("-_ ")
             cleaned_name = re.sub(r'\s+', ' ', cleaned_name).strip("-_ ")
+
 
     cleaned_name = re.sub(r'\s*\((?:www\.)?farsroid\.com.*?\)\s*$', '', cleaned_name, flags=re.IGNORECASE).strip()
     cleaned_name = re.sub(r'\s*[-–—]\s*Farsroid\s*$', '', cleaned_name, flags=re.IGNORECASE).strip()
     cleaned_name = cleaned_name.strip(' -–—') 
     cleaned_name = re.sub(r'\s+', ' ', cleaned_name).strip()
+    if not cleaned_name: # If everything was stripped, fallback
+        # Try to get something from the original name before aggressive cleaning
+        name_parts = name_to_clean.split()
+        if name_parts: cleaned_name = name_parts[0] # Take the first word
     return cleaned_name
 
+
 def extract_app_name_from_page(soup, page_url):
-    """Extracts app name from H1/Title, performs light cleaning (versions, site tags)."""
+    """Extracts app name from H1/Title, performs light cleaning (versions at end, site tags)."""
     app_name_candidate = None
     h1_tag = soup.find('h1', class_=re.compile(r'title', re.IGNORECASE))
     if h1_tag and h1_tag.text.strip():
@@ -170,37 +183,21 @@ def extract_app_name_from_page(soup, page_url):
         if app_name_candidate.lower().startswith("دانلود "):
             app_name_candidate = app_name_candidate[len("دانلود "):].strip()
         
-        # Light cleaning: only versions and site-specific tags
-        temp_cleaned_name = app_name_candidate
+        page_name_for_file = app_name_candidate
+        # Remove only versions that might be at the very end
         for pattern in VERSION_PATTERNS_FOR_CLEANING:
-            temp_cleaned_name = re.sub(pattern, '', temp_cleaned_name, flags=re.IGNORECASE).strip("-_ ")
-        
-        temp_cleaned_name = re.sub(r'\s*\((?:www\.)?farsroid\.com.*?\)\s*$', '', temp_cleaned_name, flags=re.IGNORECASE).strip()
-        temp_cleaned_name = re.sub(r'\s*[-–—]\s*Farsroid\s*$', '', temp_cleaned_name, flags=re.IGNORECASE).strip()
-        temp_cleaned_name = temp_cleaned_name.strip(' -–—')
-        # If cleaning versions removed too much, revert to original_name minus "دانلود" and site tags
-        # This helps preserve names like "App Name PC" or "App Name Lite"
-        if not temp_cleaned_name.strip() or len(temp_cleaned_name.split()) < 1 :
-             # Fallback to a less aggressive cleaning for the page name itself
-            page_name_for_file = app_name_candidate # Start with original (minus "دانلود")
-            page_name_for_file = re.sub(r'\s*\((?:www\.)?farsroid\.com.*?\)\s*$', '', page_name_for_file, flags=re.IGNORECASE).strip()
-            page_name_for_file = re.sub(r'\s*[-–—]\s*Farsroid\s*$', '', page_name_for_file, flags=re.IGNORECASE).strip()
-            # Remove only the version that might be at the very end if it matches common patterns
-            for pattern in VERSION_PATTERNS_FOR_CLEANING:
-                 page_name_for_file = re.sub(pattern + r'$', '', page_name_for_file, flags=re.IGNORECASE).strip("-_ ")
+             page_name_for_file = re.sub(pattern + r'$', '', page_name_for_file, flags=re.IGNORECASE).strip("-_ ") # $ for end of string
 
-        else:
-            page_name_for_file = temp_cleaned_name
-
+        page_name_for_file = re.sub(r'\s*\((?:www\.)?farsroid\.com.*?\)\s*$', '', page_name_for_file, flags=re.IGNORECASE).strip()
+        page_name_for_file = re.sub(r'\s*[-–—]\s*Farsroid\s*$', '', page_name_for_file, flags=re.IGNORECASE).strip()
+        page_name_for_file = page_name_for_file.strip(' -–—')
         page_name_for_file = re.sub(r'\s+', ' ', page_name_for_file).strip()
 
         if page_name_for_file:
             logging.info(f"نام برنامه از H1/Title (اصلی: '{original_name}', برای فایل: '{page_name_for_file}')")
             return page_name_for_file
     
-    # Fallback to URL if H1/Title fails
     logging.info(f"نام برنامه از H1/Title استخراج نشد، تلاش برای استخراج از URL: {page_url}")
-    # ... (URL extraction logic can remain similar but should also be less aggressive with variant keywords)
     parsed_url = urlparse(page_url)
     path_parts = [part for part in unquote(parsed_url.path).split('/') if part]
     if path_parts:
@@ -209,9 +206,9 @@ def extract_app_name_from_page(soup, page_url):
         guessed_name = re.sub(known_extensions_regex, '', guessed_name, flags=re.IGNORECASE)
         for pattern in VERSION_PATTERNS_FOR_CLEANING:
              guessed_name = re.sub(pattern, '', guessed_name, flags=re.IGNORECASE).strip("-_ ")
-        # Light cleaning of generic terms from URL, keep potential app-specific variants
         generic_url_terms = r'\b(دانلود|Download|برنامه|App|Apk|Farsroid|Android)\b'
         guessed_name = re.sub(generic_url_terms, '', guessed_name, flags=re.IGNORECASE).strip("-_ ")
+        # Do not remove COMMON_VARIANT_KEYWORDS_TO_DETECT_AND_CLEAN here, let scrape_farsroid_page handle it
         guessed_name = ' '.join(word.capitalize() for word in re.split(r'[-_]+', guessed_name) if word)
         guessed_name = re.sub(r'\s+', ' ', guessed_name).strip()
         if guessed_name:
@@ -223,7 +220,6 @@ def extract_app_name_from_page(soup, page_url):
 
 
 def get_page_source_with_selenium(url, wait_time=20, wait_for_class="downloadbox"):
-    # ... (بدون تغییر) ...
     logging.info(f"در حال دریافت {url} با Selenium...")
     chrome_options = ChromeOptions()
     chrome_options.add_argument("--headless")
@@ -259,7 +255,6 @@ def get_page_source_with_selenium(url, wait_time=20, wait_for_class="downloadbox
 
 
 def extract_version_from_text_or_url(text_content, url_content):
-    # ... (بدون تغییر) ...
     if text_content:
         for pattern in VERSION_REGEX_PATTERNS:
             match = re.search(pattern, text_content)
@@ -278,7 +273,6 @@ def extract_version_from_text_or_url(text_content, url_content):
     return None
 
 def get_file_extension_from_url(download_url, combined_text_for_variant):
-    # ... (بدون تغییر) ...
     parsed_url_path = urlparse(download_url).path
     raw_filename_from_url = os.path.basename(parsed_url_path)
     
@@ -314,15 +308,15 @@ def get_file_extension_from_url(download_url, combined_text_for_variant):
 
 def scrape_farsroid_page(page_url, soup, tracker_data):
     updates_found_on_page = []
-    # page_app_name_full is now the less aggressively cleaned name from H1/Title
+    # page_app_name_full is the name from H1/Title, lightly cleaned (versions at end, site tags removed)
+    # It can still contain terms like "PC", "Lite" if they are part of the product name on the page.
     page_app_name_full = extract_app_name_from_page(soup, page_url) 
     logging.info(f"پردازش صفحه: {page_url} (نام برنامه از صفحه: '{page_app_name_full}')")
 
-    # For tracking ID, we need a very clean base name
-    base_app_name_for_tracking_id = aggressively_clean_name(page_app_name_full, COMMON_VARIANT_KEYWORDS_TO_DETECT_AND_CLEAN, VERSION_PATTERNS_FOR_CLEANING)
-    if not base_app_name_for_tracking_id: base_app_name_for_tracking_id = "UnknownAppForTracking" # Fallback
+    # For tracking ID, use an aggressively cleaned name to ensure stability
+    base_app_name_for_tracking_id = aggressively_clean_name_for_tracking(page_app_name_full)
+    if not base_app_name_for_tracking_id: base_app_name_for_tracking_id = "UnknownApp" 
     logging.info(f"  نام پایه برای شناسه ردیابی: '{base_app_name_for_tracking_id}'")
-
 
     download_box = soup.find('section', class_='downloadbox')
     if not download_box: return updates_found_on_page
@@ -351,13 +345,11 @@ def scrape_farsroid_page(page_url, soup, tracker_data):
             continue
         logging.info(f"  نسخه: {current_version}")
 
-        # --- تشخیص نوع (Variant) از لینک دانلود ---
-        link_variant_parts = []
-        # combined_text_for_variant is ONLY from link_text and filename_from_url_decoded
-        combined_text_for_variant_detection = (filename_from_url_decoded.lower() + " " + link_text.lower()).replace('(farsroid.com)', '').replace('دانلود فایل نصبی', '').replace('برنامه با لینک مستقیم', '').strip()
-        combined_text_for_variant_detection = re.sub(r'\b(?:با لینک مستقیم|مگابایت|\d+)\b', '', combined_text_for_variant_detection, flags=re.IGNORECASE).strip()
+        # --- تشخیص نوع (Variant) فقط از لینک دانلود ---
+        link_only_variant_parts = []
+        combined_text_for_link_variant_detection = (filename_from_url_decoded.lower() + " " + link_text.lower()).replace('(farsroid.com)', '').replace('دانلود فایل نصبی', '').replace('برنامه با لینک مستقیم', '').strip()
+        combined_text_for_link_variant_detection = re.sub(r'\b(?:با لینک مستقیم|مگابایت|\d+)\b', '', combined_text_for_link_variant_detection, flags=re.IGNORECASE).strip()
         
-        # Detect variants from link-specific text
         variant_keywords_ordered = { 
             "Mod-Extra": ["mod-extra", "مود اکسترا"], "Mod-Lite": ["mod-lite", "مود لایت"],
             "Ad-Free": ["ad-free", "بدون تبلیغات"], "Unlocked": ["unlocked", "آنلاک"], "Patched": ["patched", "پچ شده"],
@@ -368,110 +360,109 @@ def scrape_farsroid_page(page_url, soup, tracker_data):
             "Arm64-v8a": ["arm64-v8a", "arm64"], "Armeabi-v7a": ["armeabi-v7a", "armv7"],
             "x86_64": ["x86_64"], "x86": ["x86"], "Arm": ["arm"], 
             "Mod": ["mod", "مود"], 
-            "PC": ["pc", "کامپیوتر"], "Windows": ["windows", "ویندوز"], # For link-specific detection
+            "PC": ["pc", "کامپیوتر"], "Windows": ["windows", "ویندوز"], 
             "Data": ["data", "obb", "دیتا"]
         }
         
-        temp_combined_text = combined_text_for_variant_detection
+        temp_combined_text = combined_text_for_link_variant_detection
         for key, patterns in variant_keywords_ordered.items():
             for pattern in patterns:
                 if re.search(r'\b' + re.escape(pattern) + r'\b', temp_combined_text, flags=re.IGNORECASE):
-                    if key == "Mod" and any(k in link_variant_parts for k in ["Mod-Extra", "Mod-Lite"]): continue
-                    if key == "Lite" and "Mod-Lite" in link_variant_parts: continue
-                    if key == "Pro" and any(k in link_variant_parts for k in ["Premium", "VIP", "Full", "Unlocked", "Plus"]): continue
-                    if key == "Full" and any(k in link_variant_parts for k in ["Mod", "Premium", "VIP", "Unlocked", "Plus", "Pro"]): continue
-                    if key not in link_variant_parts: link_variant_parts.append(key)
+                    if key == "Mod" and any(k in link_only_variant_parts for k in ["Mod-Extra", "Mod-Lite"]): continue
+                    if key == "Lite" and "Mod-Lite" in link_only_variant_parts: continue
+                    # Add more sophisticated checks if needed to avoid Pro if Premium etc.
+                    if key not in link_only_variant_parts: link_only_variant_parts.append(key)
                     break 
         
-        file_extension = get_file_extension_from_url(download_url, combined_text_for_variant_detection)
+        file_extension = get_file_extension_from_url(download_url, combined_text_for_link_variant_detection)
         logging.info(f"  پسوند فایل: {file_extension}")
         
-        arch_found_in_link_variants = any(arch_kw in link_variant_parts for arch_kw in ["Arm64-v8a", "Armeabi-v7a", "x86_64", "x86", "Arm"])
-
-        # Add OS type from extension if no specific variant was found in link text
-        if not link_variant_parts:
-            if file_extension in [".exe", ".msi"]: link_variant_parts.append("Windows")
-            elif file_extension in [".dmg", ".pkg"]: link_variant_parts.append("macOS")
-            elif file_extension in [".deb", ".rpm", ".appimage"]: link_variant_parts.append("Linux")
+        # Rule for PC/Windows specifically for link variants
+        if file_extension == ".exe":
+            if "PC" in link_only_variant_parts:
+                link_only_variant_parts.remove("PC")
+            if "Windows" not in link_only_variant_parts:
+                link_only_variant_parts.append("Windows")
         
-        # Handle APK Universal/Main if no other specific variant/arch from link
-        if file_extension == ".apk" and not link_variant_parts and not arch_found_in_link_variants:
-            if 'universal' in combined_text_for_variant_detection or 'اصلی' in combined_text_for_variant_detection or 'original' in combined_text_for_variant_detection or 'معمولی' in combined_text_for_variant_detection:
-                if "Universal" not in link_variant_parts: link_variant_parts.append("Universal")
-            elif 'main' in combined_text_for_variant_detection:
-                 if "Main" not in link_variant_parts: link_variant_parts.append("Main")
-
-        # Final variant string from link-specific parts
-        unique_link_variant_parts = sorted(list(set(p for p in link_variant_parts if p)))
-        link_specific_variant_final = "-".join(unique_link_variant_parts) if unique_link_variant_parts else ""
+        arch_found_in_link_variants = any(arch_kw in link_only_variant_parts for arch_kw in ["Arm64-v8a", "Armeabi-v7a", "x86_64", "x86", "Arm"])
         
-        # For display and tracking_id, combine page name inherent variants with link specific ones
-        # This is complex. Let's simplify: tracking_id uses aggressively cleaned name + link_specific_variant_final.
-        # Filename uses page_app_name_full (less cleaned) + link_specific_variant_final (with de-duplication).
-
-        variant_for_display_and_tracking = link_specific_variant_final
-        if not variant_for_display_and_tracking and file_extension == ".apk":
-            variant_for_display_and_tracking = "Universal" # Default for APK if no other variant
-        elif not variant_for_display_and_tracking:
-             variant_for_display_and_tracking = "Default"
-
-
-        logging.info(f"  نوع از لینک (Variant Final for Link): '{link_specific_variant_final}'")
-        logging.info(f"  نوع برای نمایش و ردیابی (Variant for Display/Tracking): '{variant_for_display_and_tracking}'")
-
+        # Determine final variant string for display/tracking (this can be simpler)
+        # This variant_final is what's stored in JSON and used for tracking_id's variant part
+        temp_display_variants = sorted(list(set(link_only_variant_parts)))
+        variant_final_for_display_tracking = "-".join(temp_display_variants) if temp_display_variants else ""
+        
+        if not variant_final_for_display_tracking: # If link provided no variants
+            if file_extension == ".apk" and not arch_found_in_link_variants : variant_final_for_display_tracking = "Universal"
+            elif file_extension == ".exe": variant_final_for_display_tracking = "Windows"
+            # Add more defaults based on extension if needed
+            else: variant_final_for_display_tracking = "Default"
+        
+        logging.info(f"  نوع نهایی برای نمایش/ردیابی: '{variant_final_for_display_tracking}'")
 
         # --- شناسه ردیابی ---
-        tracking_id_app_part = sanitize_text(base_app_name_for_tracking_id, for_filename=False) # Uses aggressively cleaned name
-        tracking_id_variant_part = sanitize_text(variant_for_display_and_tracking, for_filename=False)
+        tracking_id_app_part = sanitize_text(base_app_name_for_tracking_id, for_filename=False)
+        tracking_id_variant_part = sanitize_text(variant_final_for_display_tracking, for_filename=False)
         tracking_id = f"{tracking_id_app_part}_{tracking_id_variant_part}".lower().replace('--','-')
         tracking_id = re.sub(r'_+', '_', tracking_id).strip('_')
-        if tracking_id.endswith('_default') and file_extension != ".apk": # Avoid _default for non-APKs if app name is enough
-            tracking_id = tracking_id[:-len('_default')]
-        elif tracking_id.endswith('_universal') and file_extension != ".apk": # Avoid _universal for non-APKs
+        if tracking_id.endswith(("_default", "_archive", "_image", "_audio", "_video", "_document", "_font")) and file_extension != ".apk":
+            tracking_id = tracking_id.rsplit('_', 1)[0]
+        elif tracking_id.endswith('_universal') and file_extension != ".apk":
              tracking_id = tracking_id[:-len('_universal')]
-
         logging.info(f"  شناسه ردیابی: {tracking_id}")
         
         # --- نام فایل پیشنهادی ---
-        # Start with the page-derived app name (which can include "PC", "Lite", etc.)
-        app_name_for_file_sanitized = sanitize_text(page_app_name_full, for_filename=True)
+        # Base name for filename comes from page title (lightly cleaned)
+        app_name_base_for_file = sanitize_text(page_app_name_full, for_filename=True)
         version_for_file = sanitize_text(current_version, for_filename=True).replace('.', '_')
         
-        filename_parts = [app_name_for_file_sanitized]
+        all_filename_tokens = []
+        if app_name_base_for_file:
+            all_filename_tokens.extend(app_name_base_for_file.split('_'))
         if version_for_file:
-            filename_parts.append(f"v{version_for_file}")
+            all_filename_tokens.append(f"v{version_for_file}")
 
-        # Add parts from link_specific_variant_final, avoiding duplication with app_name_for_file_sanitized
-        if link_specific_variant_final:
-            app_name_tokens = set(app_name_for_file_sanitized.split('_'))
-            for part in link_specific_variant_final.split('-'):
-                sanitized_part = sanitize_text(part, for_filename=True)
-                if sanitized_part and sanitized_part not in app_name_tokens:
-                    # Further check to avoid adding "lite" if app_name already has "mod-lite" etc.
-                    is_sub_part_of_existing = False
-                    for existing_token in app_name_tokens:
-                        if sanitized_part in existing_token and len(sanitized_part) < len(existing_token): # e.g. lite in mod-lite
-                            is_sub_part_of_existing = True
-                            break
-                    if not is_sub_part_of_existing:
-                         filename_parts.append(sanitized_part)
+        # Add sanitized parts from link_only_variant_parts
+        # These are variants detected *only* from the link itself
+        for part in unique_link_variant_parts: # Use the unique sorted list from link detection
+            sanitized_link_variant_part = sanitize_text(part, for_filename=True)
+            if sanitized_link_variant_part:
+                all_filename_tokens.append(sanitized_link_variant_part)
         
-        # Ensure "universal" is added for APKs if no other specific variant was added from link
-        if file_extension == ".apk" and "universal" not in filename_parts and \
-           (not link_specific_variant_final or link_specific_variant_final.lower() == "universal"):
-            is_already_varianted = any(vp.lower() in filename_parts for vp in ["mod", "lite", "premium", "vip", "pro", "unlocked", "patched", "clone", "beta", "full", "plus", "ultra"])
-            if not is_already_varianted:
-                 filename_parts.append("universal")
+        # Special handling for "universal" for APKs if no other specific app variant is present
+        if file_extension == ".apk":
+            # Check if any "significant" variant is already in all_filename_tokens
+            # Significant = not arch, not universal/main/default itself
+            is_apk_already_specifically_varianted = False
+            significant_app_variants = {"mod", "lite", "premium", "vip", "pro", "unlocked", "patched", "clone", "beta", "full", "plus", "ultra", "persian", "english"} # etc.
+            
+            # Check tokens that are not the app name base or version
+            current_variant_tokens_in_filename = []
+            if app_name_base_for_file:
+                current_variant_tokens_in_filename = [t for t in all_filename_tokens if t not in app_name_base_for_file.split('_') and not t.startswith('v')]
+            else: # if app_name_base_for_file was empty
+                current_variant_tokens_in_filename = [t for t in all_filename_tokens if not t.startswith('v')]
 
 
-        # Remove duplicates from filename_parts before joining
-        final_filename_components = []
-        seen_in_filename = set()
-        for part in filename_parts:
-            if part and part not in seen_in_filename:
-                final_filename_components.append(part)
-                seen_in_filename.add(part)
+            for token in current_variant_tokens_in_filename:
+                if token in significant_app_variants:
+                    is_apk_already_specifically_varianted = True
+                    break
+            
+            if not is_apk_already_specifically_varianted and "universal" not in all_filename_tokens:
+                all_filename_tokens.append("universal")
+
+        # Remove duplicates while preserving order and filter empty strings
+        final_filename_components = list(dict.fromkeys(filter(None, all_filename_tokens)))
         
+        # Final check for adjacent identical parts (e.g. if base name was "Zapya Lite" and link variant was "Lite")
+        # This should be less necessary now due to dict.fromkeys, but as a safeguard:
+        if len(final_filename_components) > 1:
+            deduplicated_final_parts = [final_filename_components[0]]
+            for k_idx in range(1, len(final_filename_components)):
+                if final_filename_components[k_idx] != final_filename_components[k_idx-1]:
+                    deduplicated_final_parts.append(final_filename_components[k_idx])
+            final_filename_components = deduplicated_final_parts
+
         filename_base = "_".join(final_filename_components)
         suggested_filename = filename_base + file_extension
         suggested_filename = re.sub(r'_+', '_', suggested_filename).strip('_')
@@ -483,9 +474,9 @@ def scrape_farsroid_page(page_url, soup, tracker_data):
         if compare_versions(current_version, last_known_version):
             logging.info(f"    => آپدیت جدید برای {tracking_id}: {current_version} (قبلی: {last_known_version})")
             updates_found_on_page.append({
-                "app_name": page_app_name_full, # Display name can be richer
+                "app_name": page_app_name_full, 
                 "version": current_version,
-                "variant": variant_for_display_and_tracking, # Variant for JSON output
+                "variant": variant_final_for_display_tracking, 
                 "download_url": download_url,
                 "page_url": page_url,
                 "tracking_id": tracking_id,
